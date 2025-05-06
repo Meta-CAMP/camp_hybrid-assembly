@@ -1,0 +1,12 @@
+#'''Parameters config.'''#
+
+ext:             ''
+conda_prefix:    ''
+min_read_len:    1000
+
+
+# --- assemblers --- #
+
+# Select one or both of: hybridmetaspades, metaflye
+assembler:       'hybridmetaspades,metaflye' 
+min_ctg_len:     25000

@@ -1,0 +1,427 @@
+'''Workflow for the CAMP Hybrid Assembly module.'''
+
+
+from contextlib import redirect_stderr
+import os
+from os.path import abspath, basename, dirname, join
+import pandas as pd
+import shutil
+import tarfile
+from utils import Workflow_Dirs, ingest_samples
+
+
+# Load and/or make the working directory structure
+dirs = Workflow_Dirs(config['work_dir'], 'hybrid_assembly')
+
+
+# Load sample names and input files 
+SAMPLES = ingest_samples(config['samples'], dirs.TMP)
+ASSEMBS = []
+for a in config['assembler'].split(','):
+    if 'hybridmetaspades' in a:
+        ASSEMBS.append('0_hybridspades')
+    if 'metaflye' in a:
+        ASSEMBS += ['1_metaflye', '2_lr_polishing', '3_sr_polishing']
+
+
+# Specify the location of any external resources and scripts
+dirs_ext = config['ext']
+dirs_scr = join(dirs_ext, 'scripts')
+
+
+MIN_CTG_LEN=config["min_ctg_len"]
+
+
+# --- Workflow output --- #
+
+
+rule all:
+    input:
+        join(dirs.OUT, 'final_reports', 'samples.csv'),
+        join(dirs.OUT, 'final_reports', 'quast.tar.gz'),
+        join(dirs.OUT, 'final_reports', 'ctg_stats.csv'),
+        join(dirs.OUT, 'final_reports', 'ctg_lens.csv')
+
+
+def workflow_mode(wildcards):
+    out = [join(dirs.OUT, '4_quast', 'report.tsv')]
+    for a in config['assembler'].split(','):
+        if 'hybridmetaspades' in a:
+            out.extend(expand(join(dirs.OUT, '0_hybridspades', '{sample}', 'assembly.fasta'), sample = SAMPLES))
+        if 'metaflye' in a:
+            out.extend(expand(join(dirs.OUT, '3_sr_polishing', '{sample}', 'assembly.fasta'), sample = SAMPLES))
+    return(out)
+
+
+# --- Workflow steps --- #
+
+
+rule filter_long_reads:
+    input: 
+        join(dirs.TMP,'{sample}_nano.fastq.gz'),
+    output: 
+        join(dirs.TMP,'{sample}_filt.fastq.gz'),
+    params:
+        min_len = config['min_read_len'],
+    shell:
+        """
+        zcat {input} | \
+        while read -r header && read -r seq && read -r plus && read -r qual; do \
+            if [ ${{#seq}} -ge {params.min_len} ]; then \
+            echo -e "$header\n$seq\n$plus\n$qual"; \
+            fi; \
+        done | gzip > {output}
+        """
+
+
+rule hybridspades_assembly:
+    input:
+        fwd = join(dirs.TMP,'{sample}_1.fastq.gz'),
+        rev = join(dirs.TMP,'{sample}_2.fastq.gz'),
+        nano = join(dirs.TMP,'{sample}_filt.fastq.gz'),
+    output:
+        join(dirs.OUT,'0_hybridspades','{sample}', 'assembly.fasta'),
+    log:
+        join(dirs.LOG, 'hybridspades', '{sample}.out'),
+    conda:
+        'spades',
+    threads:
+        config['assembly_threads'],
+    resources:
+        mem_mb = config['assembly_mem_mb'],
+    params:
+        out_dir = join(dirs.OUT,'0_hybridspades','{sample}'),
+    shell:
+        """
+        if [ -f "{params.out_dir}/K33/assembly_graph.fastg" ]; then
+            spades.py --restart-from k55 -o {params.out_dir} -t {threads} -m {resources.mem_mb} >> {log} 2>&1 # Restart from k = 55
+        elif [ -f "{params.out_dir}/K21/assembly_graph.fastg" ]; then
+            spades.py --restart-from k33 -o {params.out_dir} -t {threads} -m {resources.mem_mb} >> {log} 2>&1 # Restart from k = 33
+        else
+            spades.py --only-assembler --meta -t {threads} -m {resources.mem_mb} -1 {input.fwd} -2 {input.rev} --nanopore {input.nano} -o {params.out_dir} > {log} 2>&1 
+        fi
+
+        mv {params.out_dir}/contigs.fasta {output}
+        """
+
+
+rule metaflye_assembly:
+    input:
+        join(dirs.TMP,'{sample}_filt.fastq.gz'),
+    output:
+        join(dirs.OUT,'1_metaflye','{sample}', 'assembly.fasta'),
+    log:
+        join(dirs.LOG, 'metaflye', '{sample}.out'),
+    conda:
+        'flye',
+    threads:
+        config['assembly_threads'],
+    resources:
+        mem_mb = config['assembly_mem_mb'],
+    params:
+        out_dir = join(dirs.OUT,'1_metaflye','{sample}'),
+        read_flag = config['read_flag'],
+    shell:
+        """
+        flye --meta --{params.read_flag} {input} --threads {threads} --out-dir {params.out_dir} > {log} 2>&1
+        """
+
+
+rule filter_metaflye_asm:
+    input:
+        join(dirs.OUT,'1_metaflye','{sample}', 'assembly.fasta'),
+    output: 
+        join(dirs.OUT,'1_metaflye','{sample}', 'geq' + str(MIN_CTG_LEN) + 'bp.fasta'),
+    params:
+        min_len=MIN_CTG_LEN
+    shell:
+        """
+        seq=""
+        while read -r line; do
+            if [[ $line == ">"* ]]; then
+            if [[ -n $seq && ${{#seq}} -ge {params.min_len} ]]; then
+                echo -e "$header\n$seq"
+            fi
+            header=$line
+            seq=""
+            else
+            seq+=$line
+            fi
+        done < {input} > {output}
+        if [[ -n $seq && ${{#seq}} -ge {params.min_len} ]]; then
+            echo -e "$header\n$seq" >> {output}
+        fi
+        """
+
+
+rule minialign_polishing:
+    input:
+        nano = join(dirs.TMP,'{sample}_filt.fastq.gz'),
+        ctgs = join(dirs.OUT,'1_metaflye','{sample}', 'geq' + str(MIN_CTG_LEN) + 'bp.fasta'),
+    output:
+        join(dirs.OUT,'2_lr_polishing','{sample}', 'mini_align.bam'),
+    log:
+        join(dirs.LOG, 'polishing', '{sample}.mini_align.out'),
+    conda:
+        'medaka',
+    threads:
+        config['polishing_threads'],
+    params:
+        out_dir = join(dirs.OUT,'2_lr_polishing','{sample}'),
+    shell:
+        """
+        mkdir -p {params.out_dir}
+        mini_align -i {input.nano} -r {input.ctgs} -m -p {params.out_dir}/mini_align -t {threads} > {log} 2>&1
+        """
+
+
+rule chunk_metaflye_asm:
+    input: 
+        join(dirs.OUT,'1_metaflye','{sample}', 'geq' + str(MIN_CTG_LEN) + 'bp.fasta'),
+    output:
+        expand(join(dirs.OUT, '2_lr_polishing', '{sample}', 'geq' + str(MIN_CTG_LEN) + 'bp.0{idx}.txt'), sample = '{sample}', idx = range(10)),
+    params:
+        out_dir = join(dirs.OUT,'2_lr_polishing','{sample}'),
+        prefix = join(dirs.OUT,'2_lr_polishing','{sample}', 'geq' + str(MIN_CTG_LEN) + 'bp.'),
+    shell:
+        """
+        grep "^>" {input} | sed 's/^>//' | cut -d ' ' -f 1 > {params.out_dir}/long_ctgs.txt 
+        num_ctgs=$(wc -l < {params.out_dir}/long_ctgs.txt)
+        ctgs_per_fa=$(( (num_ctgs + 9) / 10 )) # Divide total contigs into 10 files, rounding up
+        split -l $ctgs_per_fa -d --additional-suffix=.txt {params.out_dir}/long_ctgs.txt {params.prefix}
+        """
+
+
+rule medaka_polishing:
+    input: 
+        bam = join(dirs.OUT,'2_lr_polishing','{sample}', 'mini_align.bam'),
+        ctgs = join(dirs.OUT, '2_lr_polishing', '{sample}', 'geq' + str(MIN_CTG_LEN) + 'bp.0{idx}.txt'),
+    output:
+        join(dirs.OUT, '2_lr_polishing', '{sample}', 'geq' + str(MIN_CTG_LEN) + 'bp.0{idx}.hdf'),
+    log:
+        join(dirs.LOG, 'polishing', '{sample}.0{idx}.consensus.out'),
+    conda:
+        'medaka',
+    threads:
+        2,
+    params:
+        idx = '{idx}',
+    shell:  
+        """
+        regions=$(tr '\n' ' ' < {input.ctgs})
+        medaka consensus {input.bam} \
+            {output} --regions $regions \
+            --model r941_prom_high_g4011 \
+            --threads {threads} > {log} 2>&1
+        """
+
+
+rule medaka_stitching:
+    input:
+        expand(join(dirs.OUT, '2_lr_polishing', '{sample}', 'geq' + str(MIN_CTG_LEN) + 'bp.0{idx}.hdf'), sample = '{sample}', idx = range(10)),
+    output:
+        join(dirs.OUT, '2_lr_polishing', '{sample}', 'geq' + str(MIN_CTG_LEN) + 'bp.fasta'),
+    log:
+        join(dirs.LOG, 'polishing', '{sample}.stitch.out'),
+    conda:
+        'medaka',
+    threads:
+        config['polishing_threads'],
+    params:
+        raw_asm = join(dirs.OUT,'1_metaflye','{sample}', 'geq' + str(MIN_CTG_LEN) + 'bp.fasta'),
+    shell:
+        """
+        medaka stitch {input} {params.raw_asm} {output} --threads {threads} > {log} 2>&1
+        """
+
+
+rule add_short_ctgs:
+    input:
+        raw_asm = join(dirs.OUT,'1_metaflye','{sample}', 'assembly.fasta'),
+        medaka_asm = join(dirs.OUT, '2_lr_polishing', '{sample}', 'geq' + str(MIN_CTG_LEN) + 'bp.fasta'),
+    output:
+        join(dirs.OUT, '2_lr_polishing', '{sample}', 'assembly.fasta'),
+    params:
+        raw_asm_dir = join(dirs.OUT,'1_metaflye','{sample}'),
+        min_len = MIN_CTG_LEN,
+    shell:
+        """
+        seq=""
+        while read -r line; do
+            if [[ $line == ">"* ]]; then
+            if [[ -n $seq && ${{#seq}} -lt {params.min_len} ]]; then
+                echo -e "$header\n$seq"
+            fi
+            header=$line
+            seq=""
+            else
+            seq+=$line
+            fi
+        done < {input.raw_asm} > {params.raw_asm_dir}/leq{params.min_len}bp.fasta
+        if [[ -n $seq && ${{#seq}} -lt {params.min_len} ]]; then
+            echo -e "$header\n$seq" >> {params.raw_asm_dir}/leq{params.min_len}bp.fasta
+        fi
+        cat {input.medaka_asm} {params.raw_asm_dir}/leq{params.min_len}bp.fasta > {output}
+        """
+
+
+rule bowtie2_idx:
+    input:
+        join(dirs.OUT, '2_lr_polishing', '{sample}', 'assembly.fasta'),
+    output:
+        join(dirs.OUT, '3_sr_polishing', '{sample}', 'assembly.1.bt2'),
+    log:
+        join(dirs.LOG, 'polishing', '{sample}.bt2_idx.out'),
+    threads:
+        config['polishing_threads'],
+    params:
+        out_dir = join(dirs.OUT, '3_sr_polishing', '{sample}'),
+    shell:
+        """
+        mkdir -p {params.out_dir}
+        bowtie2-build --threads {threads} {input} {params.out_dir}/assembly > {log} 2>&1
+        """
+
+
+rule bowtie2_polishing:
+    input:
+        idx = join(dirs.OUT, '3_sr_polishing', '{sample}', 'assembly.1.bt2'),
+        fq = join(dirs.TMP,'{sample}_{dir}.fastq.gz'),
+    output:
+        join(dirs.OUT, '3_sr_polishing', '{sample}', 'sr.{dir}.sam'),
+    log:
+        join(dirs.LOG, 'polishing', '{sample}.{dir}.bt2.out'),
+    threads:
+        config['bowtie2_threads'],
+    params:
+        out_dir = join(dirs.OUT, '3_sr_polishing', '{sample}'),
+        dir = '{dir}',
+    shell:
+        """
+        zcat {input.fq} | sed 's/\/{params.dir}$//' | gzip > {params.out_dir}/{params.dir}.fq.gz
+        bowtie2 --threads {threads} -a -x {params.out_dir}/assembly -U {params.out_dir}/{params.dir}.fq.gz > {output} 2> {log}
+        """
+
+
+rule polypolish_filter:
+    input:
+        expand(join(dirs.OUT, '3_sr_polishing', '{sample}', 'sr.{dir}.sam'), sample = '{sample}', dir = ['1', '2']),
+    output:
+        join(dirs.OUT, '3_sr_polishing', '{sample}', 'filt.1.sam'),
+        join(dirs.OUT, '3_sr_polishing', '{sample}', 'filt.2.sam'),
+    log:
+        join(dirs.LOG, 'polishing', '{sample}.filter.out'),
+    conda:
+        'polypolish',
+    shell:
+        """
+        polypolish filter --in1 {input[0]} --in2 {input[1]} --out1 {output[0]} --out2 {output[1]} > {log} 2>&1
+        """
+
+
+rule polypolish_polish:
+    input:
+        join(dirs.OUT, '2_lr_polishing', '{sample}', 'assembly.fasta'),
+        expand(join(dirs.OUT, '3_sr_polishing', '{sample}', 'filt.{dir}.sam'), sample = '{sample}', dir = ['1', '2']),
+    output:
+        join(dirs.OUT, '3_sr_polishing', '{sample}', 'assembly.fasta'),
+    log:
+        join(dirs.LOG, 'polishing', '{sample}.polish.out'),
+    conda:
+        'polypolish',
+    shell:
+        """
+        polypolish polish {input[0]} {input[1]} {input[2]} > {output} 2> {log}
+        """
+
+
+rule step_statistics:
+    input:
+        join(dirs.OUT, '{asm}', '{sample}', 'assembly.fasta'),
+    output:
+        stats = join(dirs.OUT, '{asm}', '{sample}', 'ctg_stats.csv'),
+        lens = join(dirs.OUT, '{asm}', '{sample}', 'ctg_lens.csv'),
+    params:
+        sample = '{sample}',
+        asm = '{asm}',
+        calc_script = join(dirs_scr, 'calc_ctg_lens.py'),
+    shell:
+        """
+        python {params.calc_script} {params.sample} {params.asm} {input} {output.stats} {output.lens}
+        """
+
+
+rule concat_statistics:
+    input:
+        expand(join(dirs.OUT, '{asm}', '{sample}', 'ctg_stats.csv'), asm = ASSEMBS, sample = SAMPLES),
+    output:
+        join(dirs.OUT, 'final_reports', 'ctg_stats.csv'),
+    shell:
+        """
+        echo -e 'sample_name,assembler,num_ctgs,total_size,mean_ctg_len' | cat - {input} > {output}
+        """
+
+
+rule concat_lengths:
+    input:
+        expand(join(dirs.OUT, '{asm}', '{sample}', 'ctg_lens.csv'), asm = ASSEMBS, sample = SAMPLES),
+    output:
+        join(dirs.OUT, 'final_reports', 'ctg_lens.csv'),
+    shell:
+        """
+        echo -e 'sample_name,assembler,ctg_size' | cat - {input} > {output}
+        """
+
+
+rule quast:
+    input:
+        expand(join(dirs.OUT, '{asm}', '{sample}', 'assembly.fasta'), asm = ASSEMBS, sample = SAMPLES),
+    output:
+        join(dirs.OUT, '4_quast', 'report.tsv'),
+    log:
+        join(dirs.LOG, 'quast', 'all_assemblies.out'),
+    conda:
+        'quast',
+    threads: config['quast_threads'],
+    params:
+        labels = ','.join([s + '_' + a[3:] for a in ASSEMBS for s in SAMPLES]),
+        out_dir = join(dirs.OUT, '4_quast'),
+    shell:
+        """
+        quast.py --threads {threads} --min-contig 0 -o {params.out_dir} --labels {params.labels} {input} --no-plots > {log} 2>&1
+        """
+
+
+rule make_config:
+    input:
+        workflow_mode,
+    output:
+        tar = join(dirs.OUT, 'final_reports', 'quast.tar.gz'),
+        csv = join(dirs.OUT, 'final_reports', 'samples.csv'),
+    params:
+        quast_dir = join(dirs.OUT, '4_quast'),
+        out_dir = join(dirs.OUT, 'final_reports'),
+        tmp_dir = dirs.TMP,
+    run:
+        with tarfile.open(str(output.tar),"w:gz") as tar:
+            tar.add(str(params.quast_dir))
+        dct = {}
+        for i in input[1:]:
+            info = str(i).split('/')
+            s = info[-2]
+            a = info[-3][3:]
+            if a == 'sr_polishing':
+                a = 'metaflye'
+            ctgs = join(params.out_dir, '.'.join([s, a, 'fasta']))
+            shutil.copy(str(i), ctgs)
+            sp = s + '_' + a
+            dct[sp] = {}
+            dct[sp]['hybrid_ctgs'] = ctgs
+            dct[sp]['illumina_fwd'] = join(str(params.tmp_dir), s + '_1.fastq.gz')
+            dct[sp]['illumina_rev'] = join(str(params.tmp_dir), s + '_2.fastq.gz')
+            dct[sp]['nanopore'] = join(str(params.tmp_dir), s + '.fastq.gz')
+        df = pd.DataFrame.from_dict(dct, orient ='index')
+        df.reset_index(inplace = True)
+        df.rename(columns = {'index': 'sample_name'}, inplace = True)
+        df.to_csv(str(output.csv), index = False)
+

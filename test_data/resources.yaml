@@ -1,0 +1,20 @@
+#'''Computational resource config.'''#
+
+
+count_reads_mem_mb: 100000
+
+
+# --- assembly --- #
+
+assembly_threads: 10
+assembly_mem_mb:  50000
+
+# --- polishing --- #
+
+polishing_threads: 10
+bowtie2_threads: 10
+
+# --- quast --- #
+
+quast_threads: 10
+quast_mem_mb:  50000
