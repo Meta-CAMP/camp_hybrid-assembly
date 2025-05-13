@@ -3,7 +3,7 @@
 
 <!-- [![Documentation Status](https://img.shields.io/readthedocs/camp_hybrid-assembly)](https://camp-documentation.readthedocs.io/en/latest/hybrid_assembly.html) -->
 
-![Version](https://img.shields.io/badge/version-0.1.0-brightgreen)
+![Version](https://img.shields.io/badge/version-0.2.0-brightgreen)
 
 ## Overview
 
