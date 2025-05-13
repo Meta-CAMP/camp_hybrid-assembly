@@ -1,7 +1,7 @@
 # CAMP Hybrid Assembly
 
 
-[![Documentation Status](https://img.shields.io/readthedocs/camp_hybrid-assembly)](https://camp-documentation.readthedocs.io/en/latest/hybrid_assembly.html)
+<!-- [![Documentation Status](https://img.shields.io/readthedocs/camp_hybrid-assembly)](https://camp-documentation.readthedocs.io/en/latest/hybrid_assembly.html) -->
 
 ![Version](https://img.shields.io/badge/version-0.1.0-brightgreen)
 
@@ -44,7 +44,7 @@ git clone https://github.com/Meta-CAMP/camp_hybrid-assembly
 
 2. Set up the rest of the module interactively by running `setup.sh`. This step downloads databases and installs the other conda environments needed for running the module. This is done interactively by running `setup.sh`. `setup.sh` also generates `parameters.yaml` based on user input paths for running this module.
 ```Bash
-cd camp_hybrid-assembly
+cd camp_hybrid-assembly/
 source setup.sh
 
 # If you encounter issues where conda activate is not recognized, follow these steps to properly initialize Conda
@@ -52,7 +52,7 @@ conda init
 source ~/.bashrc # or source ~/.zshrc
 ```
 
-3. Make sure the installed pipeline works correctly. With 10 threads and a maximum of 10 GB allocated, the dataset should finish in approximately 20 minutes.
+3. Make sure the installed pipeline works correctly. With 10 threads and a maximum of 40 GB allocated, the dataset should finish in under 11 minutes.
 --->
 ```Bash
 # Run tests on the included sample dataset

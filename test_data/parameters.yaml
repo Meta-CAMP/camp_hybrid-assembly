@@ -1,20 +1,21 @@
 #'''Parameters config.'''#
 
 ext:            ''
-conda_prefix:   ''
+conda_prefix:   '/'
 min_read_len:   1000
 
 
 # --- general --- #
 
 assembler:      'hybridmetaspades,metaflye'
-min_ctg_len:    25000
+min_ctg_len:    1000
 
 
 # --- metaflye --- #
 
-read_flag:      'nano-corr'
+read_flag:      'nano-raw'
 
 # --- medaka --- #
 
 basecaller_model:   'r1041_e82_400bps_sup_v5.0.0'
+

@@ -128,3 +128,15 @@ dmypy.json
 
 # IntelliJ Idea family of suites
 .idea
+
+# Other
+*.idea/
+*.DS_Store
+test_data/.DS_Store
+workflow/.DS_Store
+workflow/ext/.DS_Store
+.dmanifest
+binning.out
+.snakemake
+test_out/
+hybrid-assembly.out

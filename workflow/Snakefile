@@ -206,12 +206,13 @@ rule medaka_polishing:
         2,
     params:
         idx = '{idx}',
+        basecaller_model = config['basecaller_model'],
     shell:  
         """
         regions=$(tr '\n' ' ' < {input.ctgs})
-        medaka consensus {input.bam} \
+        medaka inference {input.bam} \
             {output} --regions $regions \
-            --model r941_prom_high_g4011 \
+            --model {params.basecaller_model} \
             --threads {threads} > {log} 2>&1
         """
 
@@ -231,7 +232,7 @@ rule medaka_stitching:
         raw_asm = join(dirs.OUT,'1_metaflye','{sample}', 'geq' + str(MIN_CTG_LEN) + 'bp.fasta'),
     shell:
         """
-        medaka stitch {input} {params.raw_asm} {output} --threads {threads} > {log} 2>&1
+        medaka sequence {input} {params.raw_asm} {output} --threads {threads} > {log} 2>&1
         """
 
 

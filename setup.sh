@@ -65,7 +65,7 @@ find_install_camp_env() {
         echo "✅ The main CAMP environment is already installed in $DEFAULT_CONDA_ENV_DIR."
     else
         echo "🚀 Installing the main CAMP environment in $DEFAULT_CONDA_ENV_DIR/..."
-        conda create --prefix "$DEFAULT_CONDA_ENV_DIR/camp" -c conda-forge -c bioconda biopython blast bowtie2 bumpversion click click-default-group cookiecutter jupyter matplotlib numpy pandas samtools scikit-learn scipy seaborn snakemake umap-learn upsetplot
+        conda create --prefix "$DEFAULT_CONDA_ENV_DIR/camp" -c conda-forge -c bioconda biopython blast bowtie2 bumpversion click click-default-group cookiecutter jupyter matplotlib numpy pandas samtools scikit-learn scipy seaborn snakemake=7.32.4 umap-learn upsetplot
         echo "✅ The main CAMP environment has been installed successfully!"
     fi
 }
@@ -78,7 +78,11 @@ find_install_conda_env() {
         echo "✅ The $1 environment is already installed in $DEFAULT_CONDA_ENV_DIR."
     else
         echo "🚀 Installing $1 in $DEFAULT_CONDA_ENV_DIR/$1..."
-        conda create --prefix $DEFAULT_CONDA_ENV_DIR/$1 -c conda-forge -c bioconda $1
+        if [ $1 = 'medaka' ]; then
+            conda create -n medaka -c conda-forge -c nanoporetech medaka # Medaka from bioconda is not compatible
+        else
+            conda create --prefix $DEFAULT_CONDA_ENV_DIR/$1 -c conda-forge -c bioconda $1
+        fi
         echo "✅ $1 installed successfully!"
     # -> Template <-
     fi
@@ -94,7 +98,7 @@ ask_database() {
     echo "🛠️  Checking for $DB_NAME database..."
 
     while true; do
-        read -p "❓ Do you already have $DB_NAME installed? (y/n): " RESPONSE
+        read -p "❓ Do you already have the $DB_NAME database installed? (y/n): " RESPONSE
         case "$RESPONSE" in
             [Yy]* )
                 while true; do
@@ -111,18 +115,20 @@ ask_database() {
                         fi
                     fi
                 done
-                if [[ "$RETRY" == "i" ]]; then
-                    break  # Exit outer loop to install the database
-                fi
+                        if [[ "$RETRY" == "i" ]]; then
+                            break  # Exit outer loop to start installation
+                        fi
+                    fi
+                done
                 ;;
             [Nn]* )
-                read -p "📂 Enter the directory where you want to install $DB_NAME: " DB_PATH
-                install_database "$DB_NAME" "$DB_VAR_NAME" "$DB_PATH"
-                return  # Exit function after installation
-                ;;
+                break # Exit outer loop to start installation
+                ;; 
             * ) echo "⚠️ Please enter 'y(es)' or 'n(o)'.";;
         esac
     done
+    read -p "📂 Enter the directory where you want to install $DB_NAME: " DB_PATH
+    install_database "$DB_NAME" "$DB_VAR_NAME" "$DB_PATH"
 }
 
 # Install databases in the specified directory
@@ -169,7 +175,7 @@ MODULE_WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cd $MODULE_WORK_DIR
 # -> Template <-
-DEFAULT_CONDA_ENV_DIR=$(which -a conda | tail -1 | awk -F'/' 'BEGIN{OFS="/"}{$(NF-1)="";NF--;print}')envs
+DEFAULT_CONDA_ENV_DIR=$(conda info --base)/envs
 
 # Find or install...
 
@@ -177,7 +183,7 @@ DEFAULT_CONDA_ENV_DIR=$(which -a conda | tail -1 | awk -F'/' 'BEGIN{OFS="/"}{$(N
 find_install_camp_env
 
 # ...auxiliary environments
-MODULE_PKGS=("hybridspades" "flye" "medaka" "polypolish" "quast")
+MODULE_PKGS=("spades" "flye" "medaka" "polypolish" "quast")
 for m in "${MODULE_PKGS[@]}"; do
     find_install_conda_env "$m"
 done
@@ -198,7 +204,9 @@ MIN_CTG_LEN=25000 # For Medaka polishing
 # Check for assembly strategy
 echo "🗺️ How do you plan to assemble your short and long reads? "
 read -p "❓ Choose assembly strategy/ies (enter one or both of hybridmetaspades and metaflye, separated by a comma): " ASSEMBLERS
-echo "✅ Assembly strategy/ies set to: $ASSEMBLERS. You can change this in the config file ($MODULE_WORK_DIR/configs/parameters.yaml) later."
+echo "✅ Assembly strategy/ies set to: $ASSEMBLERS. You can change this later in the config file ($MODULE_WORK_DIR/configs/parameters.yaml) later."
+read -p "❓ Which model did you use as the Nanopore basecaller? (Press Enter for Medaka's default: r1041_e82_400bps_sup_v5.0.0): " BASECALLER_MODEL
+BASECALLER_MODEL="${BASECALLER_MODEL:-r1041_e82_400bps_sup_v5.0.0}"
 
 # Create test_data/parameters.yaml
 cat <<EOL > "$PARAMS_FILE"
@@ -212,12 +220,16 @@ min_read_len:   $MIN_READ_LEN
 # --- general --- #
 
 assembler:      '$ASSEMBLERS'
-min_ctg_len:    $MIN_CTG_LEN
+min_ctg_len:    $MIN_READ_LEN
 
 
 # --- metaflye --- #
 
 read_flag:      'nano-raw'
+
+# --- medaka --- #
+
+basecaller_model:   '$BASECALLER_MODEL'
 
 EOL
 
@@ -243,6 +255,10 @@ min_ctg_len:    $MIN_CTG_LEN
 # --- metaflye --- #
 
 read_flag:      'nano-corr'
+
+# --- medaka --- #
+
+basecaller_model:   '$BASECALLER_MODEL'
 
 EOL
 
