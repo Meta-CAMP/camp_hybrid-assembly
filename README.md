@@ -56,7 +56,7 @@ source ~/.bashrc # or source ~/.zshrc
 --->
 ```Bash
 # Run tests on the included sample dataset
-conda activate hybrid_assembly # --> Template <--
+conda activate camp # --> Template <--
 python /path/to/camp_hybrid-assembly/workflow/hybrid-assembly.py test 
 ```
 
